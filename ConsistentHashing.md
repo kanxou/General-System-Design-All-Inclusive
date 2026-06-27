@@ -713,6 +713,21 @@ This finds the first server clockwise.
 
 ---
 
+# Token Ownership 
+Every server owns the range from the previous server to itself (clockwise ownership is a common convention).
+
+Imagine walking clockwise around the ring.
+
+Example 
+
+A at 20
+
+owns
+
+(220,20]
+
+This ownership interval is often called a token range. (token = hash value)
+
 # Interview Summary
 
 1. Normal hashing uses `hash(key) % N`.
