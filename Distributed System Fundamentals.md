@@ -96,6 +96,10 @@ Time reduced for search from n to logn
 
 Conflict Resolution : LWW, Application Level, Merge( Shopping Carts), CRDT(Topics to cover)
 
+Failure Detection : All-All multicasting is expensive , n^2 messages are sent.
+    Gossip protocol can be used. 
+
+  
   
   
 
