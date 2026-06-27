@@ -1,3 +1,5 @@
+Originally Created for Key Value Store so terminoligy related to that only.
+
 1. Data Parititoning : WHAT WOULBE BE PARITION KEY?
   2. Hashing: Hash the key to provide the server where data is stored. One hash fxn can be just modulo with N,
      where N is number of serversInefficient as it causes n data movement when new nodes added or removed. 
@@ -47,8 +49,57 @@
   Initially in all nodes x = 100 lets say .User updates x = 150 and node A receives
   Network partition causes A-B to update but C is disconnected, so C has x = 100 still
   
-  Detection: 
-              
+  Detection: To detect if two nodes have different verions of data
+  1 Versioning : Add a version to each write. Problem: Two concurrent updates on two nodes generate same new version
+  2. Timestamp : Add a timestamp as well But distributed systems has clock skew problem.
+  3. Checksum/Hash
+  4. Merkle Tree: Root Node hash uniquely defines the entire dataset. Instead of Comparing each key, we just compare the root node. After a network partition, to compare the two nodes we would beed to compare entire keys
+    Step 1 If Db has say keys A, B , C ,D then the leaf node of tree has hash of these
+    These are the leaf nodes.
+    Step 2: Combine adjacent hashes.
+    Step 3 ; Compute the root
+              hABCD
+              /  \
+          hAB        hCD
+        /    \      /    \
+      hA     hB   hC     hD
+
+    Similar we will have for other network nodes, and we can compare root. 
+    If root is different we need to just go to one path which is different to find out the difference
+Time reduced for search from n to logn
+5. Vector Clock : Detect Concurrent Writes. It is version history of an object
+  Each Replica has its own counter , A B C. For one key user:123 instead of storing key value, db stores key value and vector clock. e.g. 
+    Key:
+      user:123
+    Value:
+      Alice
+    Vector Clock:
+      [A:2, B:1, C:0]
+
+      Conceptually just a map Map<NodeId, Long> 
+      {
+        "A" : 2,
+        "B" : 1,
+        "C" : 0
+      }
+  Initial Clock - [A:0 B:0 C:0] of each replica
+  ReplicaA Updates - [A:1 B:0 C:0]
+  Replica A updates again  - [A:2 B:0 C:0]
+  Replica B updates - [A:0 B:1 C:0]
+
+  During replication this clock is compared for inconsistency
+  In Dynamo db both versions are provided to application and it can choose to merge etc.
+  In cassandra : LWW , if replicas disagree then version with newest timestamp is chosen
+
+6. Read Repair : During read operaton, multiple replicas are consulted, older versions removed
+7. Anti Entropy Repair :Run periodically in background, check merkle trees, hashes missing data
+
+Conflict Resolution : LWW, Application Level, Merge( Shopping Carts), CRDT(Topics to cover)
+
+  
+  
+
+  
   
   
     
