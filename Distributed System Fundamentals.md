@@ -66,6 +66,8 @@ Originally Created for Key Value Store so terminoligy related to that only.
 
     Similar we will have for other network nodes, and we can compare root. 
     If root is different we need to just go to one path which is different to find out the difference
+    Usually we keep multiple keys together in buckets , if 16 keys,4 bucket of size 4 are used at bottom level to keep depth of tree finite.
+    In real-world systems, the bucket size is quite big. For instance, a possible configuration is one million buckets per one billion keys, so each bucket only contains 1000 keys.
 Time reduced for search from n to logn
 5. Vector Clock : Detect Concurrent Writes. It is version history of an object
   Each Replica has its own counter , A B C. For one key user:123 instead of storing key value, db stores key value and vector clock. e.g. 
@@ -98,6 +100,9 @@ Conflict Resolution : LWW, Application Level, Merge( Shopping Carts), CRDT(Topic
 
 Failure Detection : All-All multicasting is expensive , n^2 messages are sent.
     Gossip protocol can be used. 
+
+
+
 
   
   
