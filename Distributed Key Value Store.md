@@ -249,7 +249,7 @@ The payload contains the actual write information.
 
 Typical fields include:
 
-* Keyspace Name
+* Keyspace Name - like DB Name
 * Partition Key (byte array)
 * Table (Column Family) ID
 * Row modifications
