@@ -1346,3 +1346,543 @@ Partition 2
 ├── Row
 └── Row
 
+# 4. Index.db
+
+`Index.db` is an **on-disk index** that maps every **Partition Key** to its corresponding location (byte offset) inside `Data.db`.
+
+It allows Cassandra to jump directly to a partition without scanning the entire data file.
+
+---
+
+## Why Do We Need Index.db?
+
+Suppose `Data.db` contains:
+
+```text
+Offset
+
+0      Partition(user1)
+500    Partition(user2)
+1200   Partition(user3)
+2000   Partition(user4)
+```
+
+Without an index, Cassandra would need to sequentially scan the file.
+
+Instead, `Index.db` stores:
+
+```text
+user1 → Offset 0
+
+user2 → Offset 500
+
+user3 → Offset 1200
+
+user4 → Offset 2000
+```
+
+When searching for `user3`:
+
+```text
+Partition Key
+      │
+      ▼
+Index.db
+      │
+      ▼
+Offset = 1200
+      │
+      ▼
+Jump directly into Data.db
+```
+
+---
+
+## What Does Index.db Store?
+
+Each index entry contains:
+
+* Partition Key
+* Byte Offset inside `Data.db`
+
+It does **not** store:
+
+* Row data
+* Column values
+* Cell values
+
+---
+
+## How is it Created?
+
+During a Memtable flush:
+
+1. Cassandra writes a partition into `Data.db`.
+2. Records the current file offset.
+3. Stores:
+
+```text
+Partition Key → Data.db Offset
+```
+
+No second pass is required.
+
+---
+
+## Why Only Partition Keys?
+
+A partition may contain thousands of rows.
+
+Instead of indexing every row:
+
+```text
+10:00 → Offset
+10:01 → Offset
+10:02 → Offset
+...
+```
+
+Cassandra indexes only:
+
+```text
+chat1 → Offset 5000
+```
+
+Once inside the partition, Cassandra navigates using the partition's internal row structure.
+
+---
+
+## Key Characteristics
+
+| Property    | Description                            |
+| ----------- | -------------------------------------- |
+| Purpose     | Maps Partition Keys to Data.db offsets |
+| Stores      | Partition Key + Byte Offset            |
+| Mutable     | No                                     |
+| Created     | During SSTable creation                |
+| Used During | Every read                             |
+
+---
+
+# 5. Summary.db (Sparse Index)
+
+`Summary.db` is a **small in-memory sparse index** built from `Index.db`.
+
+Instead of loading the entire `Index.db` into RAM, Cassandra loads only **every Nth entry**.
+
+It acts as an **index of the index**.
+
+---
+
+## Why Do We Need Summary.db?
+
+Suppose `Index.db` contains:
+
+```text
+100 Million Partition Keys
+```
+
+Loading the entire file into memory would consume a huge amount of RAM.
+
+Instead Cassandra stores:
+
+```text
+chat1
+
+↓
+
+Index Position 0
+
+
+chat1000
+
+↓
+
+Index Position 1000
+
+
+chat2000
+
+↓
+
+Index Position 2000
+```
+
+Only a small subset of entries.
+
+---
+
+## Read Flow
+
+Suppose we search for:
+
+```sql
+chat1850
+```
+
+The lookup becomes:
+
+```text
+Summary.db
+
+↓
+
+chat1000
+
+↓
+
+chat2000
+
+↓
+
+Target lies between them
+
+↓
+
+Jump into Index.db
+
+↓
+
+Binary Search
+
+↓
+
+Get Data.db Offset
+```
+
+Only a small portion of `Index.db` needs to be searched.
+
+---
+
+## Why is it Called a Sparse Index?
+
+Unlike `Index.db`, it does **not** store every Partition Key.
+
+Example:
+
+```text
+Index.db
+
+chat1
+chat2
+chat3
+...
+chat1000
+...
+chat2000
+```
+
+Summary.db
+
+```text
+chat1
+
+chat1000
+
+chat2000
+
+chat3000
+```
+
+This significantly reduces memory consumption.
+
+---
+
+## Key Characteristics
+
+| Property        | Description                                    |
+| --------------- | ---------------------------------------------- |
+| Purpose         | Index of Index.db                              |
+| Stores          | Every Nth Partition Key + Position in Index.db |
+| Loaded Into RAM | Yes                                            |
+| Mutable         | No                                             |
+| Used During     | Every read                                     |
+
+---
+
+# 6. Filter.db (Bloom Filter)
+
+`Filter.db` stores the **Bloom Filter** for an SSTable.
+
+A Bloom Filter is a **probabilistic data structure** that quickly determines whether a Partition Key **might exist** inside an SSTable.
+
+It prevents unnecessary disk reads.
+
+---
+
+## Why Do We Need Bloom Filters?
+
+Suppose a node has:
+
+```text
+100 SSTables
+```
+
+Without Bloom Filters:
+
+```text
+Read Request
+
+↓
+
+Open SSTable-1
+
+↓
+
+Open SSTable-2
+
+↓
+
+...
+
+↓
+
+Open SSTable-100
+```
+
+Most of those SSTables may not even contain the requested partition.
+
+---
+
+## Solution
+
+Each SSTable has its own Bloom Filter.
+
+```text
+Read Request
+
+↓
+
+Bloom Filter
+
+↓
+
+Definitely NOT Present
+
+↓
+
+Skip Entire SSTable
+```
+
+or
+
+```text
+Bloom Filter
+
+↓
+
+Maybe Present
+
+↓
+
+Continue Reading
+```
+
+---
+
+## Internal Structure
+
+A Bloom Filter consists of:
+
+* Bit Array
+* Multiple Hash Functions
+
+Example:
+
+```text
+Bit Array
+
+0 0 0 0 0 0 0 0 0 0
+```
+
+Insert:
+
+```text
+user123
+```
+
+Hash Functions produce:
+
+```text
+2
+
+5
+
+8
+```
+
+Set those bits:
+
+```text
+0 0 1 0 0 1 0 0 1 0
+```
+
+---
+
+## Lookup
+
+Search:
+
+```text
+user500
+```
+
+Hashes:
+
+```text
+2
+
+5
+
+8
+```
+
+All bits are 1.
+
+Bloom Filter returns:
+
+```text
+Maybe Present
+```
+
+Search:
+
+```text
+user999
+```
+
+Hashes:
+
+```text
+1
+
+4
+
+8
+```
+
+Bit 4 is 0.
+
+Bloom Filter immediately returns:
+
+```text
+Definitely NOT Present
+```
+
+No disk access required.
+
+---
+
+## False Positives
+
+Two different keys may hash to the same bit positions.
+
+Example:
+
+```text
+user123
+
+↓
+
+2,5,8
+```
+
+```text
+user500
+
+↓
+
+2,5,8
+```
+
+Bloom Filter reports:
+
+```text
+Maybe Present
+```
+
+even though `user500` was never inserted.
+
+This is called a **False Positive**.
+
+---
+
+## False Negatives?
+
+Never.
+
+If any required bit is 0:
+
+```text
+Hash1 → 2 → 1
+
+Hash2 → 5 → 0
+
+Hash3 → 8 → 1
+```
+
+The key definitely does not exist.
+
+Therefore:
+
+* False Positives → Possible
+* False Negatives → Impossible
+
+---
+
+## Read Flow
+
+```text
+Client
+
+↓
+
+Bloom Filter
+
+↓
+
+NO
+
+↓
+
+Skip SSTable
+
+
+OR
+
+
+↓
+
+MAYBE
+
+↓
+
+Summary.db
+
+↓
+
+Index.db
+
+↓
+
+Data.db
+
+↓
+
+Read Partition
+```
+
+---
+
+## Key Characteristics
+
+| Property        | Description                                                    |
+| --------------- | -------------------------------------------------------------- |
+| Purpose         | Quickly determine whether an SSTable might contain a partition |
+| Data Structure  | Bit Array + Multiple Hash Functions                            |
+| Answers         | Definitely NOT Present / Maybe Present                         |
+| False Positives | Yes                                                            |
+| False Negatives | Never                                                          |
+| Built           | During SSTable creation                                        |
+| Mutable         | No                                                             |
+
