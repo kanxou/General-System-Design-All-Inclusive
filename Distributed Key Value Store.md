@@ -1886,3 +1886,311 @@ Read Partition
 | Built           | During SSTable creation                                        |
 | Mutable         | No                                                             |
 
+
+
+# 7. Compaction
+
+Compaction is a **background process** that merges multiple SSTables into a new SSTable while removing obsolete or unnecessary data.
+
+Since SSTables are immutable, updates and deletes create new SSTables instead of modifying existing ones. Over time, multiple SSTables accumulate, making reads slower. Compaction solves this problem.
+
+---
+
+## Why Do We Need Compaction?
+
+Every Memtable flush creates a new SSTable.
+
+```text
+Memtable Flush #1
+        │
+        ▼
+SSTable-1
+
+Memtable Flush #2
+        │
+        ▼
+SSTable-2
+
+Memtable Flush #3
+        │
+        ▼
+SSTable-3
+```
+
+Eventually a node may contain hundreds of SSTables.
+
+Without compaction:
+
+- Reads become slower.
+- Multiple versions of the same key exist.
+- Deleted data (tombstones) continue occupying space.
+
+---
+
+## What Does Compaction Do?
+
+Compaction:
+
+- Reads multiple SSTables.
+- Merges sorted data.
+- Keeps only the newest version of each partition.
+- Removes obsolete versions.
+- Removes expired TTL data.
+- Removes tombstones (after `gc_grace_seconds`).
+- Writes a brand-new SSTable.
+- Deletes the old SSTables.
+
+---
+
+## Example
+
+Before Compaction
+
+```text
+SSTable-1
+
+user1 → John
+user2 → Alice
+
+----------------
+
+SSTable-2
+
+user1 → Bob
+user3 → David
+```
+
+After Compaction
+
+```text
+SSTable-3
+
+user1 → Bob
+user2 → Alice
+user3 → David
+```
+
+Old SSTables are deleted.
+
+---
+
+## Compaction Process
+
+```text
+SSTable-1
+      │
+SSTable-2
+      │
+SSTable-3
+      │
+      ▼
+Background Compaction
+      │
+      ▼
+Merged SSTable
+      │
+      ▼
+Delete Old SSTables
+```
+
+---
+
+## Why is it Efficient?
+
+SSTables are already sorted.
+
+Compaction performs a merge similar to the merge step of Merge Sort.
+
+Example
+
+```text
+SSTable-1
+
+1
+4
+8
+
+------------
+
+SSTable-2
+
+2
+3
+7
+```
+
+Merge
+
+```text
+1
+2
+3
+4
+7
+8
+```
+
+Time Complexity: **O(n)**
+
+---
+
+## What Gets Removed?
+
+### 1. Older Versions
+
+```text
+user1 → John
+
+user1 → Alice
+```
+
+Keep:
+
+```text
+user1 → Alice
+```
+
+---
+
+### 2. Expired TTL Data
+
+Expired cells are discarded during compaction.
+
+---
+
+### 3. Tombstones
+
+Deletes are stored as tombstones.
+
+Once the tombstone has existed longer than `gc_grace_seconds` and all replicas are expected to have received it, compaction permanently removes:
+
+- Tombstone
+- Original deleted data
+
+---
+
+## Read Amplification
+
+More SSTables means more SSTables to check during reads.
+
+Compaction reduces read amplification.
+
+---
+
+## Write Amplification
+
+Compaction rewrites existing data into new SSTables.
+
+Even unchanged data is rewritten.
+
+This increases disk writes.
+
+---
+
+## Space Amplification
+
+During compaction:
+
+```text
+Old SSTables
+        +
+New SSTable
+```
+
+Both exist temporarily, requiring additional disk space.
+
+---
+
+## Compaction Strategies
+
+### 1. Size-Tiered Compaction Strategy (STCS)
+
+- Merges SSTables of similar size.
+- Optimized for write-heavy workloads.
+- Default strategy for many workloads.
+
+---
+
+### 2. Leveled Compaction Strategy (LCS)
+
+- Organizes SSTables into multiple levels.
+- Reduces read amplification.
+- Higher write amplification.
+
+Best for read-heavy workloads.
+
+---
+
+### 3. Time Window Compaction Strategy (TWCS)
+
+- Groups SSTables by time windows.
+- Ideal for time-series data.
+- Efficient handling of TTL expiration.
+
+---
+
+## Trade-offs
+
+| Benefit | Cost |
+|---------|------|
+| Faster Reads | Write Amplification |
+| Fewer SSTables | Additional CPU |
+| Removes Old Versions | Temporary Disk Usage |
+| Removes Tombstones | Additional Disk I/O |
+
+---
+
+## Key Characteristics
+
+| Property | Description |
+|----------|-------------|
+| Purpose | Merge SSTables and remove obsolete data |
+| Runs | Background |
+| Input | Multiple SSTables |
+| Output | One or more new SSTables |
+| Removes | Older versions, expired data, tombstones |
+| Modifies Existing SSTables | No |
+| Benefit | Faster reads and reclaimed disk space |
+
+---
+
+## Complete Storage Lifecycle
+
+```text
+Write
+   │
+   ▼
+Commit Log
+   │
+   ▼
+Memtable
+   │
+   ▼
+Flush
+   │
+   ▼
+SSTable
+   │
+   ▼
+Multiple SSTables
+   │
+   ▼
+Compaction
+   │
+   ▼
+Merged SSTable
+```
+
+---
+
+## Interview Takeaways
+
+- SSTables are **immutable**.
+- Every Memtable flush creates a **new SSTable**.
+- Compaction **never updates an SSTable in place**.
+- Compaction merges SSTables using a **linear merge** because they are already sorted.
+- It removes obsolete versions, expired TTL data, and eligible tombstones.
+- The three major trade-offs are:
+  - Read Amplification
+  - Write Amplification
+  - Space Amplification
