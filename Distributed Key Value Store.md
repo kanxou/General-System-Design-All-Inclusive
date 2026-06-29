@@ -749,5 +749,555 @@ During reads, Cassandra compares timestamps and returns the newest value.
 * Background flushing ensures writes never pause.
 
 
+# 3. SSTable (Sorted String Table)
+
+An **SSTable (Sorted String Table)** is an **immutable, sorted, on-disk data structure** that stores data permanently after it has been flushed from the Memtable.
+
+It is the primary storage format used by Cassandra and most LSM-tree databases (ScyllaDB, RocksDB, LevelDB, HBase, etc.).
+
+---
+
+# Why Do We Need SSTables?
+
+The Memtable resides entirely in RAM.
+
+Although RAM provides extremely fast reads and writes, it is:
+
+* Volatile (data is lost on power failure)
+* Limited in size
+* Expensive compared to disk storage
+
+Eventually, the Memtable must be persisted to disk.
+
+Instead of updating existing files, Cassandra writes the entire Memtable as a brand-new **SSTable**.
+
+```text
+Incoming Write
+       │
+       ▼
+ Commit Log (Durability)
+       │
+       ▼
+ Active Memtable (RAM)
+       │
+       ▼
+ Immutable Memtable
+       │
+       ▼
+ Background Flush
+       │
+       ▼
+ SSTable (Disk)
+```
+
+---
+
+# Why is it called a "Sorted String Table"?
+
+The name originates from Google's **Bigtable** paper.
+
+* **Sorted** → Keys are stored in sorted order.
+* **String** → Historical term referring to key-value records.
+* **Table** → A persistent collection of records.
+
+Today, the keys and values are binary serialized objects—not just strings.
+
+---
+
+# Key Characteristics
+
+An SSTable is:
+
+* Immutable
+* Sorted by Partition Key
+* Sequentially written to disk
+* Optimized for fast reads
+* Never modified after creation
+* Created only by flushing a Memtable
+
+---
+
+# SSTable Lifecycle
+
+```text
+          Active Memtable
+                 │
+      (Threshold Reached)
+                 │
+                 ▼
+       Immutable Memtable
+                 │
+        Background Flush
+                 │
+                 ▼
+            SSTable-1
+```
+
+Every Memtable flush creates a **new SSTable**.
+
+Example:
+
+```text
+Flush #1
+
+↓
+
+SSTable-1
+
+Flush #2
+
+↓
+
+SSTable-2
+
+Flush #3
+
+↓
+
+SSTable-3
+```
+
+Existing SSTables are **never updated**.
+
+---
+
+# Why are SSTables Immutable?
+
+Suppose we already have:
+
+```text
+SSTable-1
+
+user1 → John
+user2 → Alice
+```
+
+A new write arrives:
+
+```text
+PUT(user1, Bob)
+```
+
+Cassandra does **not** modify SSTable-1.
+
+Instead:
+
+```text
+New Write
+      │
+      ▼
+Memtable
+      │
+      ▼
+Flush
+      │
+      ▼
+SSTable-2
+
+user1 → Bob
+```
+
+Disk now contains:
+
+```text
+SSTable-1
+
+user1 → John
+
+
+SSTable-2
+
+user1 → Bob
+```
+
+During reads, Cassandra compares timestamps and returns the newest value.
+
+The obsolete version is removed later during **Compaction**.
+
+---
+
+# Why Immutable?
+
+Immutability provides several advantages:
+
+* No random disk writes
+* No file locking
+* No in-place updates
+* Readers never block writers
+* Safe concurrent access
+* Easy crash recovery
+* Efficient sequential writes
+* Simpler compaction
+
+---
+
+# SSTable Creation
+
+When the Memtable reaches its configured threshold:
+
+1. It becomes immutable.
+2. A new Active Memtable is immediately created.
+3. A background thread flushes the immutable Memtable.
+4. The Memtable is written sequentially to disk.
+5. A brand-new SSTable is created.
+
+Since the Memtable is already sorted, **no sorting is required during the flush.**
+
+---
+
+# One SSTable is NOT One File
+
+One of the biggest misconceptions is thinking that an SSTable is a single file.
+
+It is actually a **collection of multiple files**, each serving a specific purpose.
+
+Example:
+
+```text
+users-aa-1-Data.db
+users-aa-1-Index.db
+users-aa-1-Summary.db
+users-aa-1-Filter.db
+users-aa-1-CompressionInfo.db
+users-aa-1-Statistics.db
+users-aa-1-Digest.crc32
+users-aa-1-TOC.txt
+```
+
+All of these files together represent **one SSTable**.
+
+Think of it like a Java project:
+
+```text
+Java Project
+
+├── Main.java
+├── Utils.java
+├── Config.java
+└── pom.xml
+```
+
+Multiple files together form one logical project.
+
+Similarly, multiple component files together form one logical SSTable.
+
+---
+
+# High-Level SSTable Structure
+
+```text
+SSTable
+│
+├── Data.db
+├── Index.db
+├── Summary.db
+├── Filter.db
+├── CompressionInfo.db
+├── Statistics.db
+├── Digest.crc32
+└── TOC.txt
+```
+
+---
+
+# SSTable Components
+
+## 1. Data.db
+
+The primary storage file.
+
+Contains:
+
+* Partition data
+* Rows
+* Columns
+* Cell values
+* Timestamps
+* TTL
+* Tombstones
+
+This is where the actual application data lives.
+
+---
+
+## 2. Index.db
+
+Maps every Partition Key to its location inside **Data.db**.
+
+Conceptually:
+
+```text
+Partition Key
+
+↓
+
+Disk Offset
+```
+
+Example:
+
+```text
+user100 → Offset 0
+
+user200 → Offset 2048
+
+user300 → Offset 4096
+```
+
+Allows Cassandra to jump directly into the data file without scanning it.
+
+---
+
+## 3. Summary.db
+
+A sparse in-memory index built from **Index.db**.
+
+Instead of loading the entire Index into memory, Cassandra stores every Nth entry.
+
+Example:
+
+```text
+Index.db
+
+user1
+user2
+user3
+...
+user1000
+...
+user2000
+```
+
+Summary:
+
+```text
+user1
+
+↓
+
+Index Position 0
+
+
+user1000
+
+↓
+
+Index Position 1000
+
+
+user2000
+
+↓
+
+Index Position 2000
+```
+
+This significantly reduces memory usage.
+
+---
+
+## 4. Filter.db
+
+Stores the **Bloom Filter**.
+
+Used to answer:
+
+> "Could this SSTable contain this partition?"
+
+Possible answers:
+
+```text
+NO
+
+or
+
+MAYBE
+```
+
+If the Bloom Filter returns **NO**, Cassandra skips the SSTable entirely.
+
+This avoids unnecessary disk reads.
+
+---
+
+## 5. CompressionInfo.db
+
+If Data.db is compressed, Cassandra must know:
+
+* Which compressed block contains the requested partition.
+* Where that block starts on disk.
+
+CompressionInfo.db stores this metadata.
+
+---
+
+## 6. Statistics.db
+
+Stores metadata about the SSTable.
+
+Examples include:
+
+* Number of partitions
+* Minimum timestamp
+* Maximum timestamp
+* Tombstone count
+* Compression ratio
+* Minimum key
+* Maximum key
+
+Used by:
+
+* Reads
+* Compaction
+* Repair
+* Query optimization
+
+---
+
+## 7. Digest.crc32
+
+Contains checksums for corruption detection.
+
+During reads:
+
+```text
+Read Block
+
+↓
+
+Compute CRC32
+
+↓
+
+Compare
+
+↓
+
+Valid / Corrupted
+```
+
+Ensures data integrity.
+
+---
+
+## 8. TOC.txt
+
+Table Of Contents.
+
+Simply lists every component file that belongs to this SSTable.
+
+Example:
+
+```text
+Data.db
+Index.db
+Summary.db
+Filter.db
+Statistics.db
+CompressionInfo.db
+Digest.crc32
+```
+
+---
+
+# Complete SSTable Layout
+
+```text
+SSTable
+│
+├── Data.db
+│      ├── Partition
+│      ├── Rows
+│      ├── Cells
+│      └── Values
+│
+├── Index.db
+│      └── Partition Key → Disk Offset
+│
+├── Summary.db
+│      └── Sparse Index
+│
+├── Filter.db
+│      └── Bloom Filter
+│
+├── CompressionInfo.db
+│      └── Compression Metadata
+│
+├── Statistics.db
+│      └── SSTable Statistics
+│
+├── Digest.crc32
+│      └── Checksums
+│
+└── TOC.txt
+       └── Component List
+```
+
+---
+
+# SSTable Read Flow
+
+When Cassandra receives:
+
+```text
+GET(user123)
+```
+
+The lookup follows approximately this path:
+
+```text
+Client
+   │
+   ▼
+Memtable
+   │
+   ▼
+Bloom Filter (Filter.db)
+   │
+   ▼
+Summary.db
+   │
+   ▼
+Index.db
+   │
+   ▼
+CompressionInfo.db
+   │
+   ▼
+Data.db
+   │
+   ▼
+Return Row
+```
+
+Notice that Cassandra almost never scans the entire `Data.db`. Every supporting component exists to reduce disk I/O and minimize the amount of data that must be read.
+
+---
+
+# Why Split an SSTable into Multiple Files?
+
+Instead of placing everything into one large file, Cassandra separates responsibilities.
+
+| File                   | Purpose                                            |
+| ---------------------- | -------------------------------------------------- |
+| **Data.db**            | Stores the actual partition data                   |
+| **Index.db**           | Maps Partition Keys to locations inside Data.db    |
+| **Summary.db**         | Small in-memory sparse index into Index.db         |
+| **Filter.db**          | Bloom Filter used to skip unnecessary SSTables     |
+| **CompressionInfo.db** | Maps compressed blocks to disk offsets             |
+| **Statistics.db**      | Stores metadata used for reads and compaction      |
+| **Digest.crc32**       | Detects corruption using checksums                 |
+| **TOC.txt**            | Lists all component files belonging to the SSTable |
+
+---
+
+# Key Takeaways
+
+* SSTables are immutable, sorted files created by flushing Memtables.
+* Every Memtable flush creates a brand-new SSTable.
+* Existing SSTables are never modified.
+* Multiple SSTables may contain different versions of the same key.
+* Compaction later merges SSTables and removes obsolete data.
+* An SSTable is a logical structure composed of multiple physical files, each optimized for a specific purpose in the read path.
 
 
