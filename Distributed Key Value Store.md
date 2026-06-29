@@ -348,47 +348,406 @@ Commit Log
 └── Segment
 ```
 
-Memtable : Temporary in memory datastructure that stores the most recent operations (insert, update, delete) before permanently flushing to disk
-In traditional B-Tree databases, every write requires finding a specific location on the disk, resulting in slow, random I/O operations. A memtable bypasses this bottleneck. It acts as a write buffer in RAM, allowing incoming data to be absorbed instantly at memory speeds.
-Simultaneously to the WAL , the data is added to the active memtable, It keeps all the keys sorted regardless of the insertion order, once the size reaches a particular threshold say 32MB
-It is marked as immutable. It stops accepting new writes, and a fresh, empty memtable is instantly spawned to keep handling traffic without interruption
+# 2. Memtable
 
-Flushing to Disk: A background thread picks up the frozen, immutable memtable and flushes its sorted contents to the disk as a single, sequential block. This creates an unchangeable file called a Sorted String Table (SSTable)
-Each memtable flush will create a new SSTable in disk 
-[ Incoming Write ] ──► [ Write-Ahead Log (WAL) ] (On-Disk Sequence)
-        │
-        ▼
-[ Active Memtable ] ──► (In-Memory Sorted Structure: Skip List / Trie / B-Tree)
-        │
-        ▼ (When Size Threshold Met)
-[ Immutable Memtable ] ──► [ Background Flush ] ──► [ SSTable (On-Disk) ]
+The **Memtable** is an in-memory, sorted data structure that stores the latest write operations (**INSERT**, **UPDATE**, **DELETE**) before they are permanently flushed to disk as an SSTable.
+
+It acts as a **write buffer** between the Commit Log and SSTables.
+
+---
+
+# Why Do We Need a Memtable?
+
+Traditional **B-Tree** databases update data directly on disk.
+
+Every write typically requires:
+
+1. Finding the correct page.
+2. Loading the page into memory.
+3. Modifying it.
+4. Writing the page back.
+
+This results in **random disk I/O**, which is relatively slow.
+
+```text
+Write
+   │
+Find Disk Page
+   │
+Modify Page
+   │
+Random Disk Write
+```
+
+LSM-based databases (Cassandra, RocksDB, ScyllaDB, LevelDB) avoid this problem.
+
+Instead, writes are first accumulated in an in-memory buffer called the **Memtable**.
+
+Memory writes are several orders of magnitude faster than random disk writes.
+
+---
+
+# Memtable in the Write Path
+
+After a Mutation has been successfully appended to the Commit Log (WAL), the same Mutation is inserted into the **Active Memtable**.
+
+```text
+Incoming Write
+      │
+      ▼
+Commit Log (Durability)
+      │
+      ▼
+Active Memtable (RAM)
+      │
+      ▼
+Client ACK
+```
+
+The Commit Log guarantees **durability**, while the Memtable provides **fast writes and reads**.
+
+---
+
+# Memtable Lifecycle
+
+A Memtable goes through three stages during its lifetime.
+
+```text
+                 Incoming Write
+                       │
+                       ▼
+              Active Memtable
+                       │
+        (Size Threshold Reached)
+                       │
+                       ▼
+            Immutable Memtable
+                       │
+             Background Flush
+                       │
+                       ▼
+                  SSTable
+```
+
+### Stage 1 - Active Memtable
+
+* Accepts all new writes.
+* Maintains data in sorted order.
+* Supports fast lookups.
+* Lives entirely in RAM.
+
+---
+
+### Stage 2 - Immutable Memtable
+
+Once the configured memory threshold is reached (for example, 32 MB, 256 MB, etc.), Cassandra:
+
+* Marks the Memtable as **Immutable (Frozen)**.
+* Stops accepting new writes.
+* Creates a brand-new Active Memtable immediately.
+
+```text
+                 RAM
+
+ Active Memtable (New)
+          ▲
+          │
+     New Writes
 
 
-Internally memtable uses a skip List, a LL with express lanes, can be 2 or more lanes
-Skip list : A probabilistic, multi-layered linked list that allows elements to bypass intermediate nodes.
-| Operation | Sorted Array             | Skip List         |
-| --------- | ------------------------ | ----------------- |
-| Search    | O(log n) (binary search) | O(log n)          |
-| Insert    | O(n)                     | O(log n) expected |
-| Delete    | O(n)                     | O(log n) expected |
+ Immutable Memtable
+          │
+          ▼
+   Waiting for Flush
+```
 
-Key Internal Data Structures
-Engineers use specific data structures to build a memtable, depending on performance priorities:
-Skip Lists (Most Common):How it works: A probabilistic, multi-layered linked list that allows elements to bypass intermediate nodes.Pros: Outstanding concurrency support (lock-free architectures), simple to implement, and provides \(O(\log n)\) search and insertion.
-Used by: RocksDB, LevelDB.
-B-Trees / Red-Black Trees:How it works: Self-balancing search trees that keep data sorted and allow search, sequential access, insertions, and deletions in logarithmic time.Pros: Highly efficient memory layout and excellent lookups.Used by: Traditional databases and some custom LSM engines.
-Prefix Trees (Tries):How it works: A tree data structure used to store an associative array where the keys are usually strings.Pros: Better memory utilization and faster lookups for common string prefixes.Used by: Apache Cassandra 5.0 (Trie-indexed memtables).
+This ensures writes continue without interruption.
 
+---
 
+### Stage 3 - Flush
 
-Data Row Representation
-Inside the structure, every entry is stored as a Key-Value pair, but the "Key" is complex. It contains metadata to handle updates and deletes in an append-only system:
-**Component                                                    Description                                                            Example
-User Key                                                 The actual application-level key.                                         "user_1234"
-Timestamp / Sequence Number                        Globally incrementing ID to determine which update is the newest.                1719694400
-Type Flag                             Marks if the entry is a normal write (Value) or a deletion (Tombstone).                        0x01 (Put) or 0x00 (Delete)
-Value                                            The actual application data payload.                                                {"name": "Alice"}
-**
+A background thread sequentially writes the immutable Memtable to disk.
+
+This process is called a **Flush**.
+
+The flush creates a brand-new **SSTable**.
+
+**Every Memtable flush creates a new SSTable.**
+
+Existing SSTables are **never modified**.
+
+---
+
+# Why Create a New SSTable?
+
+Suppose we already have:
+
+```text
+SSTable-1
+
+user1
+user2
+user3
+```
+
+A new write arrives:
+
+```text
+user0
+```
+
+Appending it would break the sorted order.
+
+```text
+user1
+user2
+user3
+user0
+```
+
+Instead, Cassandra creates another SSTable.
+
+```text
+SSTable-2
+
+user0
+```
+
+Later, **Compaction** merges the two SSTables into a larger sorted SSTable.
+
+---
+
+# Internal Data Structures
+
+A Memtable is not simply an array or a HashMap.
+
+It must support:
+
+* Fast insertions
+* Fast lookups
+* Sorted iteration
+* Concurrent writes
+
+Depending on the storage engine, different data structures are used.
+
+| Data Structure | Used By                                        | Advantages                                                             |
+| -------------- | ---------------------------------------------- | ---------------------------------------------------------------------- |
+| Skip List      | RocksDB, LevelDB, Cassandra (earlier versions) | Lock-friendly, sorted, expected O(log n) operations                    |
+| Trie           | Cassandra 5.0+                                 | Better memory efficiency, faster prefix lookups, lower memory overhead |
+| Red-Black Tree | Some LSM implementations                       | Balanced tree with guaranteed O(log n) operations                      |
+| B-Tree         | Some storage engines                           | Cache-friendly memory layout                                           |
+
+---
+
+# Skip List
+
+A **Skip List** is a probabilistic multi-level linked list.
+
+Instead of traversing every node one-by-one like a normal linked list, higher levels contain **express lanes** that allow searches to skip large portions of the list.
+
+Example:
+
+```text
+Level 3
+
+A -------------------------- H
+
+Level 2
+
+A -------- D -------- H
+
+Level 1
+
+A --- B --- C --- D --- E --- F --- G --- H
+```
+
+Searching for **G**:
+
+```text
+A
+↓
+
+Jump to D
+↓
+
+Jump to H (too far)
+
+↓
+
+Move back to D
+
+↓
+
+Traverse
+
+E → F → G
+```
+
+Average complexity:
+
+| Operation | Skip List         |
+| --------- | ----------------- |
+| Search    | O(log n)          |
+| Insert    | O(log n) expected |
+| Delete    | O(log n) expected |
+
+Unlike balanced trees, Skip Lists are simpler to implement and support high concurrency.
+
+---
+
+# Trie (Cassandra 5.0)
+
+Modern Cassandra versions use **Trie-indexed Memtables** by default.
+
+A Trie stores keys character-by-character.
+
+Example:
+
+```text
+          root
+         /    \
+        a      b
+       /        \
+      p          o
+     /            \
+    p              b
+```
+
+Advantages:
+
+* Better memory utilization
+* Faster lookups for common prefixes
+* Reduced memory fragmentation
+* Improved cache locality
+
+---
+
+# What Does the Memtable Actually Store?
+
+Conceptually, a Memtable stores the **latest state** of every key (or partition in Cassandra).
+
+For a simple Key-Value Store:
+
+```text
+user1 → John
+
+user2 → Alice
+
+user3 → Bob
+```
+
+For Cassandra:
+
+```text
+Partition Key
+
+↓
+
+Partition
+
+↓
+
+Rows
+
+↓
+
+Columns
+```
+
+A Memtable therefore stores much richer structures than simple key-value pairs.
+
+---
+
+# Data Representation
+
+Every entry inside the Memtable contains more than just a key and value.
+
+Conceptually:
+
+| Component       | Description                                     | Example           |
+| --------------- | ----------------------------------------------- | ----------------- |
+| User Key        | Application-level key                           | `user123`         |
+| Timestamp       | Version used for conflict resolution            | `1719694400`      |
+| Value           | Serialized application data                     | `{name: "Alice"}` |
+| Tombstone Flag  | Indicates whether the entry represents a delete | `true` / `false`  |
+| TTL             | Time-to-Live (optional)                         | `3600 seconds`    |
+| Expiration Time | Absolute expiration timestamp                   | `1719698000`      |
+
+Notice that the Memtable stores the **latest version** of a key.
+
+Suppose:
+
+```text
+PUT(user1, John)
+```
+
+followed by
+
+```text
+PUT(user1, Alice)
+```
+
+The Memtable contains:
+
+```text
+user1
+
+↓
+
+Alice
+```
+
+The older version may still exist inside an older SSTable.
+
+During reads, Cassandra compares timestamps and returns the newest value.
+
+---
+
+# Memory Layout (Conceptual)
+
+```text
+                RAM
+
++------------------------------------------+
+| Active Memtable                          |
+|------------------------------------------|
+| user100 → Alice                          |
+| user200 → Bob                            |
+| user300 → Charlie                        |
++------------------------------------------+
+
+             │ Flush Trigger
+             ▼
+
++------------------------------------------+
+| Immutable Memtable                       |
++------------------------------------------+
+
+             │ Background Flush
+             ▼
+
+               Disk
+
++------------------------------------------+
+| SSTable                                  |
++------------------------------------------+
+```
+
+---
+
+# Key Characteristics
+
+* Entirely in memory.
+* Stores the latest writes.
+* Always maintained in sorted order.
+* Supports efficient reads before data reaches disk.
+* Never flushed in-place.
+* Once frozen, it becomes immutable.
+* Every flush creates a brand-new SSTable.
+* Existing SSTables are never modified.
+* Background flushing ensures writes never pause.
+
 
 
 
