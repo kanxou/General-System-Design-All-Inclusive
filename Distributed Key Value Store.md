@@ -2194,3 +2194,461 @@ Merged SSTable
   - Read Amplification
   - Write Amplification
   - Space Amplification
+ 
+# 8. Write Path
+
+The write path is the sequence of steps Cassandra follows to persist a write request.
+
+---
+
+## High-Level Flow
+
+```text
+Client
+   │
+   ▼
+Coordinator Node
+   │
+   ▼
+Extract Partition Key
+   │
+   ▼
+Hash (Murmur3)
+   │
+   ▼
+Token
+   │
+   ▼
+Find Replica Nodes
+   │
+   ▼
+Commit Log (WAL)
+   │
+   ▼
+Memtable
+   │
+   ▼
+ACK
+   │
+   ▼
+Client
+
+---------------------------
+
+Later...
+
+Memtable
+   │
+   ▼
+Flush
+   │
+   ▼
+SSTable
+   │
+   ▼
+Compaction
+```
+
+---
+
+## Step-by-Step
+
+### 1. Client Request
+
+```sql
+INSERT INTO users(user_id,name)
+VALUES(123,'John');
+```
+
+---
+
+### 2. Coordinator Node
+
+The client can connect to **any node**.
+
+That node becomes the **Coordinator**.
+
+Responsibilities:
+
+- Parse request.
+- Create Mutation.
+- Find replica nodes.
+- Coordinate acknowledgements.
+
+---
+
+### 3. Compute Token
+
+Coordinator extracts the **Partition Key**.
+
+```text
+Partition Key
+
+↓
+
+Murmur3 Hash
+
+↓
+
+Token
+```
+
+---
+
+### 4. Find Replica Nodes
+
+Using the Token Ring:
+
+```text
+Token
+
+↓
+
+Replica Nodes
+```
+
+Replication Factor determines how many replicas receive the write.
+
+---
+
+### 5. Send Mutation
+
+Coordinator forwards the Mutation to every replica.
+
+---
+
+### 6. Local Write
+
+Each replica performs:
+
+```text
+Mutation
+
+↓
+
+Commit Log (Durability)
+
+↓
+
+Memtable (Fast Reads)
+```
+
+Commit Log and Memtable are updated almost simultaneously.
+
+---
+
+### 7. Acknowledgement
+
+Replicas acknowledge according to the requested Consistency Level.
+
+Example:
+
+Replication Factor = 3
+
+Consistency = QUORUM
+
+Required ACKs = 2
+
+---
+
+### 8. Background Flush
+
+When Memtable reaches its threshold:
+
+```text
+Memtable
+
+↓
+
+Immutable
+
+↓
+
+Flush
+
+↓
+
+SSTable
+```
+
+---
+
+### 9. Background Compaction
+
+Later:
+
+```text
+SSTable-1
+
+SSTable-2
+
+SSTable-3
+
+↓
+
+Compaction
+
+↓
+
+Merged SSTable
+```
+
+---
+
+## Components Used
+
+- Coordinator
+- Partition Key
+- Murmur3 Hash
+- Token Ring
+- Replica Nodes
+- Mutation
+- Commit Log
+- Memtable
+- SSTable
+- Compaction
+
+---
+
+## Key Characteristics
+
+- Writes are append-only.
+- Commit Log guarantees durability.
+- Memtable provides fast writes.
+- SSTables are created asynchronously.
+- Compaction is asynchronous.
+
+
+# 9. Read Path
+
+The read path retrieves the latest version of a partition from Memtables and SSTables.
+
+Unlike writes, reads may consult multiple SSTables.
+
+---
+
+## High-Level Flow
+
+```text
+Client
+   │
+   ▼
+Coordinator
+   │
+   ▼
+Hash Partition Key
+   │
+   ▼
+Find Replica Nodes
+   │
+   ▼
+Read Replica
+   │
+   ▼
+Memtable
+   │
+   ▼
+Bloom Filter
+   │
+   ▼
+Summary.db
+   │
+   ▼
+Index.db
+   │
+   ▼
+Data.db
+   │
+   ▼
+Merge Results
+   │
+   ▼
+Return Latest Version
+```
+
+---
+
+## Step-by-Step
+
+### 1. Client Request
+
+```sql
+SELECT *
+
+FROM users
+
+WHERE user_id=123;
+```
+
+---
+
+### 2. Coordinator Node
+
+The node receiving the request becomes the Coordinator.
+
+---
+
+### 3. Compute Token
+
+```text
+Partition Key
+
+↓
+
+Hash
+
+↓
+
+Token
+```
+
+---
+
+### 4. Find Replica Nodes
+
+Coordinator determines which replicas own the partition.
+
+---
+
+### 5. Read Memtable
+
+Always check Memtable first.
+
+Latest writes may not yet be flushed.
+
+---
+
+### 6. Bloom Filter (Filter.db)
+
+Question:
+
+```text
+Does this SSTable possibly contain this partition?
+```
+
+Possible answers:
+
+```text
+NO
+```
+
+↓
+
+Skip SSTable
+
+or
+
+```text
+MAYBE
+```
+
+↓
+
+Continue
+
+---
+
+### 7. Summary.db
+
+Small in-memory sparse index.
+
+Finds approximately where the partition lies inside Index.db.
+
+---
+
+### 8. Index.db
+
+Maps
+
+```text
+Partition Key
+
+↓
+
+Byte Offset
+```
+
+inside Data.db.
+
+---
+
+### 9. Data.db
+
+Jump directly to the partition.
+
+Read:
+
+- Partition
+- Rows
+- Columns
+- Cell Values
+
+---
+
+### 10. Merge Results
+
+Data may exist in:
+
+- Memtable
+- SSTable-1
+- SSTable-2
+- SSTable-3
+
+Cassandra compares timestamps.
+
+Newest version wins.
+
+---
+
+### 11. Read Repair (Optional)
+
+If replicas return different versions:
+
+```text
+Replica A
+
+↓
+
+Version 5
+
+Replica B
+
+↓
+
+Version 3
+```
+
+Coordinator repairs stale replicas.
+
+---
+
+### 12. Return Result
+
+Coordinator sends the newest version to the client.
+
+---
+
+## Components Used
+
+- Coordinator
+- Token Ring
+- Replica
+- Memtable
+- Bloom Filter
+- Summary.db
+- Index.db
+- Data.db
+- Timestamp Comparison
+- Read Repair
+
+---
+
+## Key Characteristics
+
+- Memtable is checked first.
+- Bloom Filters avoid unnecessary SSTable reads.
+- Summary.db reduces Index.db search.
+- Index.db locates partitions.
+- Data.db stores actual data.
+- Results from multiple SSTables are merged.
+- Latest timestamp wins.
