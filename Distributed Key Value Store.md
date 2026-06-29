@@ -1301,3 +1301,48 @@ Instead of placing everything into one large file, Cassandra separates responsib
 * An SSTable is a logical structure composed of multiple physical files, each optimized for a specific purpose in the read path.
 
 
+
+# Data.db
+
+`Data.db` is the **primary file inside an SSTable**. It stores the **actual application data** (partitions, rows, columns, and cell values). Every other SSTable component (`Index.db`, `Summary.db`, `Filter.db`, etc.) exists only to help Cassandra locate data inside `Data.db` efficiently.
+
+---
+
+## Purpose
+
+- Stores the actual user data permanently on disk.
+- Written sequentially during a Memtable flush.
+- Immutable (never modified after creation).
+- Optimized for sequential reads and writes.
+
+---
+
+## What Does Data.db Store?
+
+Conceptually, it stores **Partitions**.
+
+Each Partition contains:
+
+- Partition Key
+- Partition Metadata
+- Rows
+- Columns
+- Cell Values
+- Timestamps
+- TTL
+- Tombstones
+
+```text
+Data.db
+
+Partition 1
+│
+├── Row
+├── Row
+└── Row
+
+Partition 2
+│
+├── Row
+└── Row
+
