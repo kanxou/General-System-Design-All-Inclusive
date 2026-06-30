@@ -1,3 +1,4 @@
+WORK IN PROGRESS : NOT COMPLETE INFO
 Originally Created for Key Value Store so terminoligy related to that only.
 
 1. Data Parititoning : WHAT WOULBE BE PARITION KEY?
