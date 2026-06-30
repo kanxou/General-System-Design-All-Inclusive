@@ -1,0 +1,79 @@
+Recommended Read : https://bytebytego.com/courses/system-design-interview/design-a-url-shortener
+
+100M Q/D = 100M / 86400 ≈ 100M / 100000 = 100 ,000000/100000 = 1000Q/s   (In actual it is 1160)
+10M Q/D = 100Q/s
+1M Q/D = 10Q/s
+
+Since formular one more zero in persecond call than in M Q/D
+
+BOE Calculations:
+W:R = 1:10
+Writes : 100M Q/D = 1000 Q/s, Peak = 3 Times = 3000Q/s
+Reads : 10000 Q/s , Peak = 3 Times = 30000Q/s
+Assuming the URL shortener service will run for 10 years, this means we must support 100 million * 365 * 10 = 365 billion records.
+
+If we are going to store the following in a row :
+Orignal URL : 200C : 200B
+Shorten id : 8C : 8 B = 2^64 unique combos , if 100M urls per day -> 36.5 B url per year -> to exhause 2^64 ids , even if signed we would have 2^63-1
+-> 36.5 x 10^9/ 2 ^256  (We use 8 Byte int i.e long for id as in prod)
+How long until you exhaust a 64-bit positive ID space at 100M urls per day ? 252 million years
+2^64 = 18.4 Quintillion unisgned = 9.2 Q unsigned = 9.2 x10^18  / 3.65× 10^10 = 2.55 x 10^8 = 255 x 10^6 = 255 M years  😭
+       ​
+
+≈252,000,000 years
+Timestamp : 8Byte
+Expiry : 8Byte
+UserId : 8Byte
+Metadata : ClickCount(8 Byte how?below) + LastAccessed TS(8B) + Other(Status,  Url Type, Flag etc) lets say 8B ≈ 24B
+ClickCount : A popular url could have click count in Billions lets say , so to represent billion numbers. 
+32 bits can represent 2³² ≈ 4.3 billion different values.
+64 bits can represent 2⁶⁴ ≈ 18 quintillion different values.
+32-bit signed integer: max = 2,147,483,647
+64-bit signed integer: max = 9,223,372,036,854,775,807
+
+So click count could use 8 Byte(as used in prod)
+
+Total Count = 240 Byte of data per row, with 100M W/D = 24 x 10^9 = 24Gb per day
+1 Yr = 24 x 365 = 10000 GB = 10 TB per year = 100Tb in 10 Year
+
+with replication factor of 3 i.e 300TB data
+
+
+IMPORTANT from https://bytebytego.com/courses/system-design-interview/design-a-url-shortener: 
+301 redirect: A 301 redirect shows that the requested URL is “permanently” moved to the long URL.
+      Since it is permanently redirected, the browser caches the response, and subsequent requests for the same URL will not be sent to the URL shortening service. 
+      Instead, requests are redirected to the long URL server directly.
+302 redirect:  A 302 redirect means that the URL is “temporarily” moved to the long URL, meaning that subsequent requests for the same URL will be sent to the URL shortening service first.
+      Then, they are redirected to the long URL server.
+
+Each redirection method has its pros and cons:
+If the priority is to reduce the server load, using 301 redirect makes sense as only the first request of the same URL is sent to URL shortening servers.
+However, if analytics is important, 302 redirect is a better choice as it can track click rate and source of the click more easily.
+
+
+
+How to know what length should we use for the short id?
+First to Study this we have to study that . That:
+if I have 10 digits and 1 length, i have 10 options
+If .....................2 length, i can use 10 in fist place and 10 again in second place so , 10^2
+If:    Base = B (number of unique characters)
+       Length = L 
+Then:
+      Unique combinations=B^L
+
+If i have 62 characters (base62: one character represents from 1 to 62 0-Z ) , then how many places do i need to have suffiecient combos
+n       Maximal number of URLs
+1       62^1 = 62
+2       62^2 = 3,844
+3       62^3 = 238,328
+4       62^ 4 = 14,776,336
+5       62^5 = 916,132,832
+6       62^6 = 56,800,235,584
+7       62^7 = 3,521,614,606,208 = ~3.5 trillion
+8       62^8 = 218,340,105,584,896
+
+3.5 trillion is enough with 100M*365*10 Years = 365 Bill records i.e unique ids. So 7 length is fine
+
+
+	​
+
