@@ -75,5 +75,70 @@ n       Maximal number of URLs
 3.5 trillion is enough with 100M*365*10 Years = 365 Bill records i.e unique ids. So 7 length is fine
 
 
+
+Functional Requirements :
+Shorten Long URL
+Redirect Short URL to Long URL
+Custom Aliases
+URL Expiration
+Analytics
+
+Non Functional Requirements :
+100M urls/Day
+Highly Available (redirects must basically never fail)
+Low latency redirects (<100ms)
+Low Write Latency
+Uniqueness of short code
+Scalable
+
+
+API Design :
+POST /api/v1/shorten
+  body: { long_url, custom_alias?, expiry_date? }
+  returns: { short_url }
+
+GET /{short_code}
+  → 301/302 redirect to long_url
+
+DELETE /api/v1/{short_code}
+GET /api/v1/{short_code}/stats
+
+307 is for keeping http type same for temporary redirct like 302 and similar for 308 - 301 .
+
+short code generation strategies:
+1. Database Auto-Increment ID : DB generates an increasing numbers, base62 it. Guarantees Unqique, No collisions, Short Ids
+2. Distributed Counter 
+3. Random String Generation: Collision Possible. Can be caluclated using Birthday Paradox. 
+4. Hash : Still collision if we hash and trim
+5. Hash + Salt: 
+6. Snowflake IDs: Very Common. Must manage machine codes. Sensitive to clock issues.
+7. Hi-Lo Algorithm: Allocate range to each server. 
+8. Segment Allocation: Ask for a block of keys, then use per request . Popular in high throughput systems
+9. NanoID
 	​
+| Strategy            | Collision               | Distributed | Predictable   | DB Lookup Needed | Scales Well |
+| ------------------- | ----------------------- | ----------- | ------------- | ---------------- | ----------- |
+| Auto Increment      | No                      | ❌           | Yes           | No               | Medium      |
+| Distributed Counter | No                      | Medium      | Yes           | No               | Medium      |
+| Random              | Yes                     | Yes         | No            | Yes              | High        |
+| Secure Random       | Extremely unlikely      | Yes         | No            | Yes              | High        |
+| MD5                 | Possible (if truncated) | Yes         | Deterministic | Maybe            | High        |
+| SHA-256             | Possible (if truncated) | Yes         | Deterministic | Maybe            | High        |
+| SHA-256 + Salt      | Possible                | Yes         | No            | Maybe            | High        |
+| UUID                | Practically no          | Yes         | No            | No               | High        |
+| Snowflake           | No                      | Yes         | Somewhat      | No               | Excellent   |
+| Hi-Lo               | No                      | Yes         | Yes           | No               | Excellent   |
+| Segment Allocation  | No                      | Yes         | Yes           | No               | Excellent   |
+| Ticket Server       | No                      | Limited     | Yes           | No               | Good        |
+| Pre-generated Pool  | No                      | Yes         | Depends       | No               | Good        |
+| NanoID              | Extremely unlikely      | Yes         | No            | Often Yes        | Excellent   |
+
+Database Design : What fields would be there. just one table is enough
+ShortUrl
+id
+longUrl
+createdAt
+expiry
+userid
+clickCount
 
