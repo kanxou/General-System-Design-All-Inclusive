@@ -142,3 +142,6 @@ expiry
 userid
 clickCount
 
+
+Storage choice: Key-value store (DynamoDB, Cassandra) fits perfectly — access pattern is pure key lookup, needs horizontal scale, high write throughput.
+Relational DB works fine too at moderate scale with just an index on short_cod
