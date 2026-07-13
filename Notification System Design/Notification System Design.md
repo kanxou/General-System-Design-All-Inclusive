@@ -1,3 +1,5 @@
+https://excalidraw.com/#json=19TF4241MVmVzUZnVI6Vb,eF8QWtKgO84BBZBqj8rcLg
+
 # Notification System SaaS
 
 A complete end-to-end design for a scalable, multi-tenant notification platform that supports email, SMS, push, in-app, webhook, and third-party messaging channels.
