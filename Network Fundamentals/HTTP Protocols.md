@@ -551,10 +551,15 @@ Instead of plain text, HTTP/2 breaks messages into binary **frames** (HEADERS, D
 Frame = [Length | Type | Flags | Stream ID | Payload]
 ```
 Frame 1: [Len=50] [Type=HEADERS] [Flags=END_HEADERS] [StreamID=1] → headers for /style.css
+
 Frame 2: [Len=30] [Type=HEADERS] [Flags=END_HEADERS] [StreamID=3] → headers for /app.js
+
 Frame 3: [Len=1200][Type=DATA]    [Flags=0]            [StreamID=1] → body chunk for /style.css
+
 Frame 4: [Len=800] [Type=DATA]    [Flags=0]            [StreamID=3] → body chunk for /app.js
+
 Frame 5: [Len=200] [Type=DATA]    [Flags=END_STREAM]   [StreamID=1] → last chunk, /style.css done
+
 
 **2. Streams and Multiplexing**
 A single TCP connection carries multiple **streams**, each an independent, bidirectional sequence of frames identified by a Stream ID. Requests/responses on different streams can be interleaved — no more "one request at a time per connection."
